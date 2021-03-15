@@ -52,6 +52,7 @@ using Test: DefaultTestSet, AbstractTestSet, Fail, Error, scrub_backtrace
 using Logging
 using LoggingExtras
 
+using Dates: now
 
 
 # Logging test results.
