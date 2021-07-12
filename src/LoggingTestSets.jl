@@ -51,6 +51,7 @@ using Test: DefaultTestSet, AbstractTestSet, Fail, Error, scrub_backtrace
 
 using Logging
 using LoggingExtras
+using DataStructures
 
 using Dates: now
 
@@ -108,6 +109,40 @@ end
 
 
 
+# Logging Failure Context.
+
+struct TestFailContextLogger{T <: AbstractLogger, L} <: AbstractLogger
+    logger::T
+    buffer::CircularBuffer{Tuple}
+    TestFailContextLogger(l::T) = new(l, buffer::CircularBuffer{Tuple}(5)) where T
+end
+
+function Logging.handle_message(logger::TestFailContextLogger,
+                                level, message, _module, group, id, file, line;
+                                kwargs...)
+    if !comp_shouldlog(logger.logger, level, _module, group, id)
+        return
+    end
+
+    args = (level, message, _module, group, id, file, line),
+    if contains(message, "Test Failed")
+        while !isempty(logger.buffer)
+            a, k = popfirst!(logger.buffer)
+            handle_message(logger.logger, a...; k...)
+        end
+        handle_message(logger.logger, args...; kwargs...)
+    else
+        push!(logger.buffer, (args, kwargs))
+    end
+end
+
+Logging.shouldlog(logger::TestFailContextLogger, args...) = true
+Logging.min_enabled_level(logger::TestFailContextLogger) = Logging.BelowMinLevel
+Logging.catch_exceptions(logger::TestFailContextLogger) = catch_exceptions(logger.logger)
+
+
+
+
 # Logging to file.
 
 struct TestFileLogger <: AbstractLogger
@@ -117,7 +152,7 @@ end
 
 
 Logging.shouldlog(::TestFileLogger, args...) = true
-Logging.min_enabled_level(::TestFileLogger) = Logging.Debug
+Logging.min_enabled_level(::TestFileLogger) = Logging.BelowMinLevel
 Logging.catch_exceptions(::TestFileLogger) = false
 
 
