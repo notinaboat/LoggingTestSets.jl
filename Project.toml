@@ -1,7 +1,7 @@
 name = "LoggingTestSets"
 uuid = "c2339e6d-2e7f-4cf9-92d2-844738085fb8"
 authors = ["notinaboat <notinaboat@icloud.com>"]
-version = "0.1.1"
+version = "0.2.0"
 
 [deps]
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
