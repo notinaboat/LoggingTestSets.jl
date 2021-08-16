@@ -46,6 +46,7 @@ module LoggingTestSets
 export LoggingTestSet
 export TestFileLogger
 export ColumnFileLogger
+export ColumnConsoleLogger
 
 using Test
 using Test: DefaultTestSet, AbstractTestSet, Fail, Error, scrub_backtrace
@@ -205,8 +206,14 @@ const default_width = 160
 struct ColumnFileLogger <: AbstractLogger
     io::IO
     width::Int
+    ColumnFileLogger(io::IO, width) = new(io, width)
     ColumnFileLogger(filename; width=default_width) =
         new(open(filename, append=true), width)
+end
+
+function ColumnConsoleLogger()
+    display_height, display_width = displaysize(stdout)
+    return ColumnFileLogger(stdout, display_width)
 end
 
 Logging.shouldlog(::ColumnFileLogger, args...) = true
