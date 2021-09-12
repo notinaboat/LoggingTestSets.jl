@@ -55,7 +55,8 @@ using Logging
 using LoggingExtras
 using DataStructures
 using Crayons
-using Dates: now, Time
+using Dates: now, today, DateTime, Time, Millisecond, Nanosecond,
+             unix2datetime, datetime2unix, format, microsecond
 
 
 # Logging test results.
@@ -206,9 +207,26 @@ const default_width = 160
 struct ColumnFileLogger <: AbstractLogger
     io::IO
     width::Int
-    ColumnFileLogger(io::IO, width) = new(io, width)
+    tzero::Float64
+    ColumnFileLogger(io::IO, width) =
+        new(io, width, seconds_since_epoch_at_local_midnight())
     ColumnFileLogger(filename; width=default_width) =
         new(open(filename, append=true), width)
+end
+
+function seconds_since_epoch_at_local_midnight()
+    localtime = now()
+    unix_s = time()
+    timezone_ms = Millisecond(localtime - unix2datetime(unix_s))
+    timezone_s = round(timezone_ms.value / 1000)
+    midnight_unix_s = datetime2unix(DateTime(today()))
+    return midnight_unix_s - timezone_s
+end
+
+function log_time(tzero::Float64, unix_s::Float64)
+    ns = round(Int64, 1e9 * (unix_s - tzero))
+    t = Time(Nanosecond(ns))
+    format(t, "HH:MM:SS.sss") * string(microsecond(t)÷100)
 end
 
 function ColumnConsoleLogger()
@@ -221,14 +239,14 @@ Logging.min_enabled_level(::ColumnFileLogger) = Logging.BelowMinLevel
 Logging.catch_exceptions(::ColumnFileLogger) = false
 
 function Logging.handle_message(l::ColumnFileLogger, args...; kwargs...)
-    write(l.io, column_format_log(l.width, args...; kwargs...))
+    write(l.io, column_format_log(l.width, l.tzero, args...; kwargs...))
     flush(l.io)
     nothing
 end
 
-function column_format_log(width,
+function column_format_log(width, tzero,
                            level, message, _module, group, id, file, line;
-                           kwargs...)
+                           timestamp=time(), kwargs...)
     
     # Split message into lines.
     # Copied from: base/logging.jl https://git.io/JqZ5Q
@@ -258,9 +276,13 @@ function column_format_log(width,
 
     # Calculate column widths and padding.
     widths = [2, 5, 1, # level
-                12, 1, # time
+                13, 1, # time
                 20, 3, # module
-                textwidth(msglines[1]),
+                try
+                    textwidth(msglines[1])
+                catch
+                    length(msglines[1])
+                end,
                 textwidth(suffix)]
     pad = max(0, width - sum(widths))
 
@@ -271,6 +293,12 @@ function column_format_log(width,
 
     buffer = IOBuffer()
 
+    if timestamp isa String
+        timestring = timestamp
+    else
+        timestring = log_time(tzero, timestamp)
+    end
+
     # Print the first line:
     #
     # ┌ Level 10:11:05.339  Module │ Log Message [ ----- pad ----- ] file:line
@@ -278,7 +306,7 @@ function column_format_log(width,
           "\n",
           bg,
           lc,  prefix, lpad(string(level), widths[2]),  inv(lc),  " ",
-          dim,         rpad(Time(now()),   widths[4]),  inv(dim), " ",
+          dim,         rpad(timestring,    widths[4]),  inv(dim), " ",
                        lpad(_module,       widths[6]),            " │ ",
                        msglines[1],        repeat(" ", pad),
           dim,         suffix,                          inv(dim),
@@ -306,7 +334,7 @@ function column_format_log(width,
         pad = max(0, width - length(fileline) - 2)
         print(buffer, "\n",
                       bg,
-                      lc, "└", repeat("-", pad), inv(lc), " ",
+                      lc, "└", repeat("─", pad), inv(lc), " ",
                       dim, fileline, inv(dim),
                       inv(bg))
     end
