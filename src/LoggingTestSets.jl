@@ -47,6 +47,7 @@ export LoggingTestSet
 export TestFileLogger
 export ColumnFileLogger
 export ColumnConsoleLogger
+export RepetitionFilteredLogger
 
 using Test
 using Test: DefaultTestSet, AbstractTestSet, Fail, Error, scrub_backtrace
@@ -224,7 +225,11 @@ function seconds_since_epoch_at_local_midnight()
 end
 
 function log_time(tzero::Float64, unix_s::Float64)
-    ns = round(Int64, 1e9 * (unix_s - tzero))
+    ns = try
+        round(Int64, 1e9 * (unix_s - tzero))
+    catch
+        0
+    end
     t = Time(Nanosecond(ns))
     format(t, "HH:MM:SS.sss") * string(microsecond(t)÷100)
 end
@@ -340,6 +345,68 @@ function column_format_log(width, tzero,
     end
 
     return String(take!(buffer))
+end
+
+
+
+# Repetition Filtered Logger
+
+
+mutable struct RepetitionFilteredLogger{T <: AbstractLogger} <: AbstractLogger
+    logger::T
+    max_level::Logging.LogLevel
+    modules::Tuple
+    last_log::Union{Nothing,NamedTuple}
+    timestamp::Float64
+    timelimit::Float64
+    count::Int
+    RepetitionFilteredLogger(l::T; modules=(),
+                                   max_level=Logging.Info,
+                                   timelimit=1) where T =
+        new{T}(l, max_level, modules, nothing, 0, timelimit, 0)
+end
+
+Logging.min_enabled_level(f::RepetitionFilteredLogger) = Logging.min_enabled_level(f.logger)
+Logging.catch_exceptions(f::RepetitionFilteredLogger) = Logging.catch_exceptions(f.logger)
+Logging.shouldlog(f::RepetitionFilteredLogger, args...) = LoggingExtras.comp_shouldlog(f.logger, args...)
+
+
+
+function Logging.handle_message(filter::RepetitionFilteredLogger, args...; kwargs...)
+    t = time()
+    log = LoggingExtras.handle_message_args(args...; kwargs...)
+
+    if log.level <= filter.max_level &&
+	log._module in filter.modules
+
+        if filter.last_log != nothing
+            if t < filter.timestamp + filter.timelimit &&
+            log.id == filter.last_log.id &&
+            log._module == filter.last_log._module &&
+            log.message == filter.last_log.message
+
+                filter.count += 1
+                return
+            end
+			if filter.count > 0
+				Logging.handle_message(filter.logger,
+									   filter.last_log.level,
+									   string("(repeated x ", filter.count, ") ", filter.last_log.message),
+									   filter.last_log._module,
+									   filter.last_log.group,
+									   filter.last_log.id,
+									   filter.last_log.file,
+									   filter.last_log.line;
+									   kwargs...)
+			end
+        end
+
+        filter.last_log = log
+        filter.timestamp = t
+        filter.count = 0
+    end
+
+    Logging.handle_message(filter.logger, args...; kwargs...)
 end
 
 
