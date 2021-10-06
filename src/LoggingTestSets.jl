@@ -62,19 +62,24 @@ using Dates: now, today, DateTime, Time, Millisecond, Nanosecond,
 
 # Logging test results.
 
-struct LoggingTestSet <: AbstractTestSet
+mutable struct LoggingTestSet <: AbstractTestSet
     ts::DefaultTestSet
+    test_name::String
     function LoggingTestSet(name; kw...)
         @info "Test Set: $name"
-        new(DefaultTestSet(name; kw...))
+        new(DefaultTestSet(name; kw...), "")
     end
 end
 
+function set_test_name(s::String)
+    Test.get_testset().test_name = s
+end
 
 function Test.record(ts::LoggingTestSet, t::Union{Fail, Error})
 
     io = IOBuffer()
 
+    ts.test_name == "" || @warn ts.test_name
     begin # copied from: stdlib/Test/src/Test.jl https://git.io/JqZQk
         print(io, ts.ts.description, ": ")
         # don't print for interrupted tests
