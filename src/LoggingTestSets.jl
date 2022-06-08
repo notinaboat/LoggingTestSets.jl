@@ -254,6 +254,7 @@ function Logging.handle_message(l::ColumnFileLogger, args...; kwargs...)
     nothing
 end
 
+
 function column_format_log(width, tzero,
                            level, message, _module, group, id, file, line;
                            timestamp=time(), kwargs...)
@@ -428,7 +429,7 @@ level_color(level) = level < Logging.Info  ? crayon"blue" :
 
 
 const module_backgrounds = Dict{String, Crayon}(
-    "LoggingTestSets" => crayon"bg:16"
+    "LoggingTestSets" => crayon"bg:green"
 )
 
 function module_background(m)
@@ -444,8 +445,22 @@ end
 const background_colors =
     Iterators.Stateful(
     Iterators.Cycle([
-    #crayon"bg:16",
-    #crayon"bg:18",
+#    crayon"bg:light_gray",
+    crayon"bg:dark_gray",
+    crayon"bg:black",
+#    crayon"bg:light_magenta",
+#    crayon"bg:light_green",
+#    crayon"bg:light_yellow",
+#    crayon"bg:light_cyan",
+    crayon"bg:light_red",
+#    crayon"bg:magenta",
+    crayon"bg:green",
+#    crayon"bg:yellow",
+    #crayon"bg:cyan",
+    crayon"bg:red",
+    crayon"bg:light_blue",
+    crayon"bg:blue",
+    #=
     crayon"bg:233",
     crayon"bg:234",
     crayon"bg:235",
@@ -467,7 +482,9 @@ const background_colors =
     crayon"bg:25",
     crayon"bg:58",
     crayon"bg:59",
-    crayon"bg:60",]))
+    crayon"bg:60",
+    =#
+    ]))
 
 
 
