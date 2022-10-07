@@ -47,17 +47,74 @@ export LoggingTestSet
 export TestFileLogger
 export ColumnFileLogger
 export ColumnConsoleLogger
+export SplitConsoleLogger
+export SplitConsoleIO
 export RepetitionFilteredLogger
+export @ltest
+export @linfo
 
 using Test
-using Test: DefaultTestSet, AbstractTestSet, Fail, Error, scrub_backtrace
+using Test: DefaultTestSet, AbstractTestSet,
+            Pass, Fail, Threw, Error, Returned,
+            eval_test, get_testset
 
 using Logging
 using LoggingExtras
 using DataStructures
 using Crayons
+using Markdown
 using Dates: now, today, DateTime, Time, Millisecond, Nanosecond,
              unix2datetime, datetime2unix, format, microsecond
+
+
+# copied from stdlib/Test/src/Test.jl
+macro ltest(id, ex, kws...)
+    Test.test_expr!("@test", ex, kws...)
+    orig_ex = Expr(:inert, ex)
+    result = Test.get_test_result(ex, __source__)
+    :(do_test($id, $result, $orig_ex))
+end
+
+
+struct Info
+    s::String
+end
+
+macro linfo(s)
+    s = esc(s)
+    :(@info $s; do_info($s))
+end
+
+function do_info(s)
+    if get_testset() isa LoggingTestSet
+        push!(get_testset().results, ("", "", Info(s)))
+    end
+end
+
+
+# copied from stdlib/Test/src/Test.jl
+function do_test(id, result::Test.ExecutionResult, orig_expr)
+    if isa(result, Returned)
+        value = result.value
+        testres = if isa(value, Bool)
+            # a true value Passes
+            value ? Pass(:test, orig_expr, result.data, value) :
+                    Fail(:test, orig_expr, result.data, value, result.source)
+        else
+            # If the result is non-Boolean, this counts as an Error
+            Error(:test_nonbool, orig_expr, value, nothing, result.source)
+        end
+    else
+        # The predicate couldn't be evaluated without throwing an
+        # exception, so that is an Error and not a Fail
+        @assert isa(result, Threw)
+        testres = Error(:test_error, orig_expr, result.exception, result.backtrace, result.source)
+    end
+    ts = get_testset()
+    Test.record(ts, testres)
+
+    push!(ts.results, (id, ts.test_name, testres))
+end
 
 
 # Logging test results.
@@ -65,11 +122,32 @@ using Dates: now, today, DateTime, Time, Millisecond, Nanosecond,
 mutable struct LoggingTestSet <: AbstractTestSet
     ts::DefaultTestSet
     test_name::String
+    results::Vector
     function LoggingTestSet(name; kw...)
         @info "Test Set: $name"
-        new(DefaultTestSet(name; kw...), "")
+        new(DefaultTestSet(name; kw...), "", [])
     end
 end
+
+function Base.show(io::IO, ts::LoggingTestSet)
+
+    # Copied from: stdlib/Test/src/Test.jl https://git.io/JqZ70
+    np, nf, ne, nb, ncp, ncf, nce, ncb = Test.get_test_counts(ts.ts)
+    passes = np + ncp
+    fails  = nf + ncf
+    errors = ne + nce
+    broken = nb + ncb
+
+    if fails + errors + broken == 0
+        print(io, "Test Set: $(ts.ts.description) -- All tests passed.")
+    else
+        print(io, "Test Set: $(ts.ts.description) -- $passes passes " *
+                                                    "$fails fails " *
+                                                    "$errors errors " *
+                                                    "$broken broken")
+    end
+end
+
 
 function set_test_name(s::String)
     Test.get_testset().test_name = s
@@ -86,7 +164,7 @@ function Test.record(ts::LoggingTestSet, t::Union{Fail, Error})
         if !(t isa Error) || t.test_type !== :test_interrupted
             print(io, t)
             if t isa Error # if not gets printed in the show method
-                Base.show_backtrace(io, scrub_backtrace(backtrace()))
+                Base.show_backtrace(io, Test.scrub_backtrace(backtrace()))
             end
             println(io)
         end
@@ -94,35 +172,68 @@ function Test.record(ts::LoggingTestSet, t::Union{Fail, Error})
 
     @error String(take!(io))
 
+    if t.test_type === :nontest_error
+        push!(ts.results, ("", ts.test_name, t))
+    end
     push!(ts.ts.results, t)
 end
 
 
-Test.record(ts::LoggingTestSet, args...) = Test.record(ts.ts, args...)
+#Test.record(ts::LoggingTestSet, args...) = Test.record(ts.ts, args...)
+function Test.record(ts::LoggingTestSet, t::Test.Result)
+
+    @info "$(ts.test_name): $t"
+
+    Test.record(ts.ts, t)
+end
+
+
+mdrow(tag, i, n, name, t::Info) = [n, "_$(t.s)_", "", ""]
+mdrow(tag, i, n, name, t::Pass) = [n, "$name $(t.orig_expr)",
+                                   "$(t.data == nothing ? true : t.data)", "✅"]
+mdrow(tag, i, n, name, t::Fail) = [n, "$name $(t.orig_expr)",
+                                   "$(t.data == nothing ? false : t.data)", "❌"]
+mdrow(tag, i, n, name, t::Error) = [n, "$name $(t.orig_expr)",
+                                  "Error at $(t.source)", "🛑[^F$tag$i]"]
+mdtable(header, align, data) = Markdown.Table(vcat([header], data), align)
+
+function mdtable(ts::LoggingTestSet)
+    tag = replace(ts.ts.description, " " => "")
+    mdtable(["Test", "Condition", "Evaluation", "Result"],
+            [:r, :l, :l, :l],
+            [mdrow(tag, i, x, n, t) for (i, (x, n, t)) in enumerate((ts.results))])
+end
+
+function mdnotes(ts::LoggingTestSet)
+    tag = replace(ts.ts.description, " " => "")
+    notes = []
+    for (i, (x, n, t)) in enumerate((ts.results))
+        if t isa Error
+            push!(notes, Markdown.Footnote("F$tag$i", "$t"))
+        end
+    end
+    notes
+end
+
+md(ts::LoggingTestSet) = md"""
+# $(ts.ts.description)
+$(mdtable(ts::LoggingTestSet))
+$(mdnotes(ts::LoggingTestSet))
+"""
+
 
 
 function Test.finish(ts::LoggingTestSet)
 
-    # Copied from: stdlib/Test/src/Test.jl https://git.io/JqZ70
-    np, nf, ne, nb, ncp, ncf, nce, ncb = Test.get_test_counts(ts.ts)
-    passes = np + ncp
-    fails  = nf + ncf
-    errors = ne + nce
-    broken = nb + ncb
-
-
-    if fails + errors + broken == 0
-        @info "Test Set: $(ts.ts.description) -- All tests passed."
-    else
-        @info "Test Summary: $(ts.ts.description)" passes fails errors broken
-    end
+    @info "$ts"
 
     try
         Test.finish(ts.ts)
     catch err
         @error err
-        rethrow(err)
     end
+
+    ts
 end
 
 
@@ -211,11 +322,11 @@ end
 const default_width = 160
 
 struct ColumnFileLogger <: AbstractLogger
-    io::IO
+    stream::IO
     width::Int
     tzero::Float64
-    ColumnFileLogger(io::IO, width) =
-        new(io, width, seconds_since_epoch_at_local_midnight())
+    ColumnFileLogger(stream::IO, width) =
+        new(stream, width, seconds_since_epoch_at_local_midnight())
     ColumnFileLogger(filename; width=default_width) =
         new(open(filename, append=true), width)
 end
@@ -239,9 +350,9 @@ function log_time(tzero::Float64, unix_s::Float64)
     format(t, "HH:MM:SS.sss") * string(microsecond(t)÷100)
 end
 
-function ColumnConsoleLogger()
-    display_height, display_width = displaysize(stdout)
-    return ColumnFileLogger(stdout, display_width)
+function ColumnConsoleLogger(io=stdout)
+    display_height, display_width = displaysize(io)
+    return ColumnFileLogger(io, display_width)
 end
 
 Logging.shouldlog(::ColumnFileLogger, args...) = true
@@ -249,8 +360,8 @@ Logging.min_enabled_level(::ColumnFileLogger) = Logging.BelowMinLevel
 Logging.catch_exceptions(::ColumnFileLogger) = false
 
 function Logging.handle_message(l::ColumnFileLogger, args...; kwargs...)
-    write(l.io, column_format_log(l.width, l.tzero, args...; kwargs...))
-    flush(l.io)
+    write(l.stream, column_format_log(l.width, l.tzero, args...; kwargs...))
+    flush(l.stream)
     nothing
 end
 
@@ -416,6 +527,126 @@ function Logging.handle_message(filter::RepetitionFilteredLogger, args...; kwarg
 end
 
 
+# Logging to Split Console.
+
+CSI(f, args...) = string("\e[", join(args, ";"), f)
+macro CSI(e)
+    if Meta.isexpr(e, :call)
+        f = string(e.args[1])
+        args = e.args[2:end]
+    else
+        f = string(e)
+        args = ()
+    end
+    esc(:(CSI($f, $(args...))))
+end
+
+      ANSI_SET_SCROLL_ROWS(top, bottom) = @CSI r(top, bottom)
+const ANSI_RESET_SCROLL_ROWS            = @CSI r
+      ANSI_CURSOR_UP(n)                 = @CSI A(n)
+      ANSI_SET_CURSOR(row, col=1)       = @CSI H(row, col)
+const ANSI_CLEAR_END                    = @CSI K(0)
+const ANSI_CLEAR_TO_TOP                 = @CSI J(1)
+const ANSI_CLEAR_SCREEN                 = @CSI J
+const ANSI_HIDE_CURSOR                  = @CSI l("?25")
+const ANSI_SHOW_CURSOR                  = @CSI h("?25")
+const ANSI_SAVE_CURSOR                  = "\e7"
+const ANSI_RESTORE_CURSOR               = "\e8"
+
+struct SplitConsoleLogger{T} <: AbstractLogger
+    console::T
+    split::Int
+    width::Int
+    height::Int
+    function SplitConsoleLogger(c::T; split = nothing) where T
+        height, width = displaysize(c.stream)
+        if split == nothing
+            split = round(Int, height * 2/3)
+        end
+        print(c.stream,
+              ANSI_SET_SCROLL_ROWS(split+1, height),
+              ANSI_SET_CURSOR(split, 1),
+              repeat('─', width),
+              ANSI_SET_CURSOR(height, 1))
+#        atexit(()->print(c.stream, ANSI_RESET_SCROLL_ROWS))
+        new{T}(c, split, width, height)
+    end
+end
+
+
+Logging.shouldlog(l::SplitConsoleLogger, args...) = Logging.shouldlog(l.console, args...)
+Logging.min_enabled_level(l::SplitConsoleLogger) = Logging.min_enabled_level(l.console)
+Logging.catch_exceptions(l::SplitConsoleLogger) = Logging.catch_exceptions(l.console)
+
+
+function Logging.handle_message(l::SplitConsoleLogger, 
+                                level, message, _module, group, id, file, line;
+                                kwargs...)
+    buffer = IOBuffer()
+    print(l.console.stream,
+          ANSI_SAVE_CURSOR,
+          ANSI_HIDE_CURSOR,
+          ANSI_SET_SCROLL_ROWS(1, l.split-1),
+          ANSI_SET_CURSOR(l.split-1, 1) #=,
+          ANSI_CLEAR_END=#)
+
+    Logging.handle_message(l.console,
+                           level, message, _module, group, id, file, line;
+                           kwargs...)
+
+    print(l.console.stream,
+          ANSI_SET_SCROLL_ROWS(l.split+1, l.height),
+          ANSI_SET_CURSOR(l.split, 1),
+          repeat('─', l.width),
+          ANSI_RESTORE_CURSOR,
+          ANSI_SHOW_CURSOR)
+end
+
+
+struct SplitConsoleIO{T} <: IO
+    stream::T
+    split::Int
+    width::Int
+    height::Int
+    function SplitConsoleIO(stream::T; split = nothing) where T
+        height, width = displaysize(stream)
+        if split == nothing
+            split = round(Int, height * 2/3)
+        end
+        print(stream,
+              ANSI_SET_SCROLL_ROWS(split+1, height),
+              ANSI_SET_CURSOR(split, 1),
+              repeat('─', width),
+              ANSI_SET_CURSOR(height, 1))
+#        atexit(()->print(stream, ANSI_RESET_SCROLL_ROWS))
+        new{T}(stream, split, width, height)
+    end
+end
+
+Base.displaysize(io::SplitConsoleIO) = displaysize(io.stream)
+
+function Base.write(io::SplitConsoleIO, x::String)
+
+    buffer = IOBuffer()
+    print(buffer,
+          ANSI_SAVE_CURSOR,
+          ANSI_HIDE_CURSOR,
+          ANSI_SET_SCROLL_ROWS(1, io.split-1),
+          ANSI_SET_CURSOR(io.split-1, 1) #=,
+          ANSI_CLEAR_END=#)
+
+    write(buffer, x)
+
+    print(buffer,
+          ANSI_SET_SCROLL_ROWS(io.split+1, io.height),
+          ANSI_SET_CURSOR(io.split, 1),
+          repeat('─', io.width),
+          ANSI_RESTORE_CURSOR,
+          ANSI_SHOW_CURSOR)
+
+    write(io.stream, take!(buffer))
+end
+
 
 # Colours.
 
@@ -447,9 +678,9 @@ const background_colors =
     Iterators.Cycle([
 #    crayon"bg:light_gray",
     crayon"bg:dark_gray",
-    crayon"bg:black",
+#    crayon"bg:black",
 #    crayon"bg:light_magenta",
-#    crayon"bg:light_green",
+    crayon"bg:light_green",
 #    crayon"bg:light_yellow",
 #    crayon"bg:light_cyan",
     crayon"bg:light_red",
